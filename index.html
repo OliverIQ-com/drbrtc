@@ -1,0 +1,99 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>WebRTC Viewer</title>
+  <style>
+    body { font-family: sans-serif; padding: 20px; }
+    input, button { font-size: 16px; margin: 5px 0; width: 100%; }
+    video { width: 100%; max-width: 640px; background: black; margin-top: 20px; }
+    pre { background: #eee; padding: 10px; overflow-x: auto; white-space: pre-wrap; }
+  </style>
+</head>
+<body>
+  <h2>WebRTC Viewer</h2>
+  <label for="serverUrl">Signaling Server URL (e.g. http://13.58.100.139:8080/offer):</label>
+  <input type="text" id="serverUrl" value="http://">
+  <button onclick="connect()">Connect</button>
+
+  <video id="video" autoplay playsinline controls muted></video>
+
+  <h3>Logs:</h3>
+  <pre id="logBox"></pre>
+
+  <script>
+    function log(msg) {
+      console.log(msg);
+      const box = document.getElementById('logBox');
+      box.textContent += msg + '\n';
+      box.scrollTop = box.scrollHeight;
+    }
+
+    async function connect() {
+      const serverUrl = document.getElementById('serverUrl').value;
+      log(`Connecting to ${serverUrl}`);
+
+      const pc = new RTCPeerConnection({
+        iceServers: [{ urls: 'stun:stun.l.google.com:19302' }],
+        iceTransportPolicy: 'all'
+      });
+
+      pc.oniceconnectionstatechange = () => {
+        log(`ICE connection state: ${pc.iceConnectionState}`);
+      };
+
+      
+      pc.addTransceiver('video', { direction: 'recvonly' });
+
+      pc.ontrack = (event) => {
+        log('✅ Received remote track, attaching to video element');
+        document.getElementById('video').srcObject = event.streams[0];
+      };
+
+      log('🔄 Creating offer...');
+      const offer = await pc.createOffer();
+      await pc.setLocalDescription(offer);
+      log('📨 Local description set. Waiting for ICE candidates...');
+
+      // Wait up to 5s for ICE gathering to complete
+      await new Promise((resolve) => {
+        const checkComplete = () => {
+          if (pc.iceGatheringState === 'complete') {
+            log('✅ ICE gathering completed');
+            resolve();
+          }
+        };
+        pc.addEventListener('icegatheringstatechange', checkComplete);
+        setTimeout(() => {
+          log('⚠️ ICE gathering timed out after 5s');
+          resolve();
+        }, 5000);
+      });
+
+      log('📦 Final Offer SDP:\n' + pc.localDescription.sdp);
+
+      let response;
+      try {
+        response = await fetch(serverUrl, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+          body: 'sdp=' + encodeURIComponent(pc.localDescription.sdp),
+        });
+      } catch (err) {
+        log('❌ Error sending offer: ' + err);
+        return;
+      }
+
+      if (!response.ok) {
+        log(`❌ Server responded with status: ${response.status} ${response.statusText}`);
+        return;
+      }
+
+      const answerSdp = await response.text();
+      log('✅ Received answer SDP. Setting remote description...');
+      await pc.setRemoteDescription({ type: 'answer', sdp: answerSdp });
+      log('🎥 Remote description set. Stream should be playing.');
+    }
+  </script>
+</body>
+</html>
+
